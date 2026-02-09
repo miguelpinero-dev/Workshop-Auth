@@ -36,73 +36,95 @@ A continuación se muestran distintos comandos `curl` para testear el comportami
 El access token no tiene expiración, por lo que un solo login alcanza para usar la API indefinidamente.
 
 ```bash
-# Login una sola vez.
-# El backend devuelve un access token SIN expiración.
-# Guardamos el token en un archivo temporal.
+echo -e "\n🔐 LOGIN – obteniendo accessToken"
+echo "----------------------------------------"
+
 curl -s -X POST http://localhost:3000/login \
   -H "Content-Type: application/json" \
   -d '{"email":"test@demo.com","password":"123456"}' \
-  | jq -r '.accessToken' > /tmp/token.txt
+  | jq -r '.accessToken' | tee /tmp/token.txt
 
-# Usamos el mismo token en /profile.
-# Como el token no expira, este request funcionará "para siempre".
+echo -e "\n📄 PROFILE – usando el mismo token"
+echo "----------------------------------------"
+
 curl -s http://localhost:3000/profile \
-  -H "Authorization: Bearer $(cat /tmp/token.txt)"
+  -H "Authorization: Bearer $(cat /tmp/token.txt)" | jq .
 ```
 
 ### 🧪 Token inválido 
 
 ```bash
-# Intentamos acceder a /profile con un token cualquiera.
+echo -e "\n🚫 PROFILE – token inválido"
+echo "----------------------------------------"
+
 curl -s http://localhost:3000/profile \
-  -H "Authorization: Bearer cualquier-token"
+  -H "Authorization: Bearer cualquier-token" \
+  | jq . 2>/dev/null || echo "Respuesta no JSON"
 ```
 
 ### 🧠 Confianza en el payload (sin validar contra DB)
 
 ```bash
-# El backend confía ciegamente en el contenido del token.
-# No hay validación contra base de datos.
+echo -e "\n🧠 PROFILE – confianza en el payload del token (sin DB)"
+echo "----------------------------------------"
+
 curl -s http://localhost:3000/profile \
-  -H "Authorization: Bearer $(cat /tmp/token.txt)"
+  -H "Authorization: Bearer $(cat /tmp/token.txt)" \
+  | jq . 2>/dev/null || echo "Respuesta no JSON"
 ```
 
 ### 🔁 Refresh token reutilizable (sin rotación)
 
 ```bash
-# Obtenemos el refresh token desde el login.
-REFRESH=$(curl -s -X POST http://localhost:3000/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@demo.com","password":"123456"}' \
-  | jq -r '.refreshToken')
+echo -e "\n🔁 LOGIN – obteniendo refreshToken"
+echo "----------------------------------------"
 
-# Usamos el mismo refresh token varias veces.
-# El backend permite su reutilización infinita.
+LOGIN_RES=$(curl -s -X POST http://localhost:3000/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@demo.com","password":"123456"}')
+
+REFRESH=$(echo "$LOGIN_RES" | jq -r '.refreshToken')
+
+echo "refreshToken:"
+echo "$REFRESH"
+
+echo -e "\n♻️ REFRESH #1"
+echo "----------------------------------------"
 curl -s -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH\"}"
+  -d "$(jq -n --arg rt "$REFRESH" '{refreshToken: $rt}')"
+```
 
+```bash
+
+echo -e "\n♻️ REFRESH #2 (mismo refreshToken)"
+echo "----------------------------------------"
 curl -s -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH\"}"
+  -d "$(jq -n --arg rt "$REFRESH" '{refreshToken: $rt}')"
+```
 
+```bash
+echo -e "\n♻️ REFRESH #3 (mismo refreshToken)"
+echo "----------------------------------------"
 curl -s -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH\"}"
+  -d "$(jq -n --arg rt "$REFRESH" '{refreshToken: $rt}')"
 ```
 
 ### 🚨 Sin rate limit en /login
 
 ```bash
-# Simulamos múltiples intentos de login seguidos (brute force).
-# El backend no aplica ningún rate limit.
+echo -e "\n🚨 BRUTE FORCE – múltiples intentos de login (sin rate limit)"
+echo "-----------------------------------------------------------"
+
 for i in $(seq 1 20); do
-  curl -s -o /dev/null -w "%{http_code} " \
+  echo -n "Intento $i -> "
+  curl -s -o /dev/null -w "%{http_code}\n" \
     -X POST http://localhost:3000/login \
     -H "Content-Type: application/json" \
     -d '{"email":"test@demo.com","password":"wrong"}'
 done
-echo ""
 ```
 
 # Prompt 2 – Manejo consistente de Authorization (401 genérico)
@@ -135,42 +157,53 @@ A continuación se prueban distintos escenarios para verificar que el backend re
 ### 🚫 Sin header Authorization
 
 ```bash
-# No enviamos el header Authorization.
-# El backend debe responder 401.
-curl -s -w "\n%{http_code}" http://localhost:3000/profile
+echo -e "\n🚫 PROFILE – sin header Authorization"
+echo "----------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile
 ```
 
 ### ⚠️ Formato inválido (solo "Bearer", sin token)
 
 ```bash
-# Enviamos Authorization sin token.
-# El backend debe responder 401, sin detallar el error.
-curl -s -w "\n%{http_code}" http://localhost:3000/profile \
+echo -e "\n⚠️ PROFILE – Authorization con formato inválido (Bearer sin token)"
+echo "---------------------------------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
   -H "Authorization: Bearer"
 ```
 
 ### ❌ Token inválido
 
 ```bash
-# Enviamos un token inválido.
-# El backend debe responder 401 genérico.
-curl -s -w "\n%{http_code}" http://localhost:3000/profile \
+echo -e "\n❌ PROFILE – token inválido"
+echo "----------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
   -H "Authorization: Bearer token.invalido"
 ```
 
 ### ✅ Token válido (comprobar que sigue funcionando)
 
 ```bash
-# Obtenemos un access token válido desde /login.
-TOKEN=$(curl -s -X POST http://localhost:3000/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@demo.com","password":"123456"}' \
-  | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+echo -e "\n✅ LOGIN – obteniendo accessToken válido"
+echo "----------------------------------------"
 
-# Usamos el token válido en /profile.
-# El endpoint debe responder 200.
-curl -s -w "\n%{http_code}" http://localhost:3000/profile \
-  -H "Authorization: Bearer $TOKEN"
+LOGIN_RES=$(curl -s -X POST http://localhost:3000/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@demo.com","password":"123456"}')
+
+TOKEN=$(echo "$LOGIN_RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+
+echo "accessToken:"
+echo "$TOKEN"
+
+echo -e "\n✅ PROFILE – usando token válido"
+echo "----------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
+  -H "Authorization: Bearer $TOKEN" \
+  | jq . 2>/dev/null || true
 ```
 
 # Prompt 3 – Expiración del access token (1 minuto) + 401 por expirado
@@ -200,21 +233,31 @@ Objetivo: confirmar que el token funciona al inicio (200) y que luego de 1 minut
 ### ⚠️ Login + Probar profile (status 200) + 60 seg + Profile (error 401)
 
 ```bash
-# 1) Hacemos login y obtenemos un access token que expira en 1 minuto.
-# 2) Probamos /profile inmediatamente (debe dar 200).
-# 3) Esperamos 60 segundos.
-# 4) Probamos /profile de nuevo (debe dar 401 por expirado).
-TOKEN=$(curl -s -X POST http://localhost:3000/login \
+echo -e "\n⏱️ LOGIN – accessToken con expiración de 1 minuto"
+echo "-----------------------------------------------"
+
+LOGIN_RES=$(curl -s -X POST http://localhost:3000/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@demo.com","password":"123456"}' \
-  | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken"); \
-echo "Profile ahora (debe ser 200):"; \
-curl -s -w "\n%{http_code}\n" http://localhost:3000/profile \
-  -H "Authorization: Bearer $TOKEN"; \
-echo "Esperando 60 segundos..."; \
-sleep 60; \
-echo "Profile después de 1 min (debe ser 401):"; \
-curl -s -w "\n%{http_code}\n" http://localhost:3000/profile \
+  -d '{"email":"test@demo.com","password":"123456"}')
+
+TOKEN=$(echo "$LOGIN_RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+
+echo "accessToken:"
+echo "$TOKEN"
+
+echo -e "\n✅ PROFILE inmediato (debe ser 200)"
+echo "----------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
+  -H "Authorization: Bearer $TOKEN"
+
+echo -e "\n⏳ Esperando 60 segundos..."
+sleep 60
+
+echo -e "\n❌ PROFILE después de 1 minuto (debe ser 401)"
+echo "--------------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
   -H "Authorization: Bearer $TOKEN"
 ```
 
@@ -244,21 +287,32 @@ Al hacer cambios en el código del proyecto, reiniciá el servidor (kill + npm s
 ### ✅ Login + profile (usuario existe y está activo)
 
 ```bash
-# Obtenemos un access token válido.
-TOKEN=$(curl -s -X POST http://localhost:3000/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@demo.com","password":"123456"}' \
-  | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+echo -e "\n🟢 LOGIN – obteniendo accessToken (usuario activo en DB)"
+echo "-------------------------------------------------------"
 
-# Con el usuario activo en DB, /profile debe responder 200.
-curl -s -w "\n%{http_code}\n" http://localhost:3000/profile \
-  -H "Authorization: Bearer $TOKEN"
+LOGIN_RES=$(curl -s -X POST http://localhost:3000/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@demo.com","password":"123456"}')
+
+TOKEN=$(echo "$LOGIN_RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+
+echo -e "\naccessToken:"
+echo "$TOKEN"
+
+echo -e "\n✅ PROFILE – usuario activo en DB (debe ser 200)"
+echo "-----------------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
+  -H "Authorization: Bearer $TOKEN" \
+  | jq . 2>/dev/null || true
 ```
 
 ### 🚫 Usuario desactivado en DB → 401
 
 ```bash
-# Desactivamos el usuario en la DB (ejecutar en la carpeta del proyecto).
+echo -e "\n🚫 DB – desactivando usuario (id=1)"
+echo "----------------------------------"
+
 node -e "
 const Database = require('better-sqlite3');
 const db = new Database('data.db');
@@ -267,21 +321,28 @@ console.log('Usuario id=1 desactivado.');
 db.close();
 "
 
-# Obtenemos un token (login sigue permitido porque login aún no usa DB).
-TOKEN=$(curl -s -X POST http://localhost:3000/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"test@demo.com","password":"123456"}' \
-  | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+echo -e "\n🔐 LOGIN – obteniendo accessToken (login sigue permitido)"
+echo "--------------------------------------------------------"
 
-# Como el usuario está inactivo en DB, /profile debe responder 401.
-curl -s -w "\n%{http_code}\n" http://localhost:3000/profile \
+LOGIN_RES=$(curl -s -X POST http://localhost:3000/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"test@demo.com","password":"123456"}')
+
+TOKEN=$(echo "$LOGIN_RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+
+echo -e "\n❌ PROFILE – usuario INACTIVO en DB (debe ser 401)"
+echo "-------------------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
   -H "Authorization: Bearer $TOKEN"
 ```
 
 ### ✅ Reactivar y ver que vuelve a dar 200
 
 ```bash
-# Reactivamos el usuario en la DB.
+echo -e "\n🟢 DB – reactivando usuario (id=1)"
+echo "----------------------------------"
+
 node -e "
 const Database = require('better-sqlite3');
 const db = new Database('data.db');
@@ -290,10 +351,12 @@ console.log('Usuario id=1 reactivado.');
 db.close();
 "
 
-# Reusamos el mismo token de antes (no hace falta volver a hacer login).
-# Con el usuario activo nuevamente, /profile debe responder 200.
-curl -s -w "\n%{http_code}\n" http://localhost:3000/profile \
-  -H "Authorization: Bearer $TOKEN"
+echo -e "\n✅ PROFILE – usuario ACTIVO nuevamente (mismo token)"
+echo "----------------------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
+  -H "Authorization: Bearer $TOKEN" \
+  | jq . 2>/dev/null || true
 ```
 
 # Prompt 5 – Access + Refresh tokens (expiración + persistencia en DB)
@@ -322,67 +385,90 @@ Al hacer cambios en el código del proyecto, reiniciá el servidor (kill + npm s
 ### ✅ Login: solo accessToken y refreshToken
 
 ```bash
-# Verificar que /login devuelve únicamente { accessToken, refreshToken }.
+echo -e "\n🔐 LOGIN – devuelve solo accessToken y refreshToken"
+echo "-----------------------------------------------"
+
 curl -s -X POST http://localhost:3000/login \
   -H "Content-Type: application/json" \
-  -d '{"email":"test@demo.com","password":"123456"}'
+  -d '{"email":"test@demo.com","password":"123456"}' \
+  | jq .
+
 ```
 
 ### ✅ Profile con accessToken y refresh para obtener nuevo access
 
 ```bash
-# Login y guardar tokens.
-RES=$(curl -s -X POST http://localhost:3000/login \
+echo -e "\n🔐 LOGIN – obteniendo accessToken y refreshToken"
+echo "----------------------------------------------"
+
+LOGIN_RES=$(curl -s -X POST http://localhost:3000/login \
   -H "Content-Type: application/json" \
   -d '{"email":"test@demo.com","password":"123456"}')
 
-ACCESS=$(echo "$RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
-REFRESH=$(echo "$RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).refreshToken")
+ACCESS=$(echo "$LOGIN_RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+REFRESH=$(echo "$LOGIN_RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).refreshToken")
 
-# Profile con accessToken (debe dar 200 mientras no expire).
-echo "Profile con accessToken:"
-curl -s -w "\n%{http_code}\n" http://localhost:3000/profile \
+echo -e "\naccessToken:"
+echo "$ACCESS"
+echo -e "\nrefreshToken:"
+echo "$REFRESH"
+
+echo -e "\n✅ PROFILE – usando accessToken (debe ser 200)"
+echo "---------------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
   -H "Authorization: Bearer $ACCESS"
 
-# Nuevo accessToken vía refresh (sin rotación: mismo refreshToken).
-echo "Refresh:"
-curl -s -X POST http://localhost:3000/refresh \
-  -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH\"}"
+echo -e "\n🔁 REFRESH – obteniendo nuevo accessToken (sin rotación)"
+echo "-------------------------------------------------------"
 
-# Opcional: obtener un nuevo access token y probarlo en /profile.
-NEW_ACCESS=$(curl -s -X POST http://localhost:3000/refresh \
+REFRESH_RES=$(curl -s -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH\"}" \
-  | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+  -d "$(jq -n --arg rt "$REFRESH" '{refreshToken: $rt}')")
 
-echo "Profile con nuevo accessToken:"
-curl -s -w "\n%{http_code}\n" http://localhost:3000/profile \
+echo "$REFRESH_RES" | jq .
+
+NEW_ACCESS=$(echo "$REFRESH_RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).accessToken")
+
+echo -e "\n✅ PROFILE – usando nuevo accessToken"
+echo "------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" http://localhost:3000/profile \
   -H "Authorization: Bearer $NEW_ACCESS"
 ```
 
 ### ⏳ Refresh token expirado (después de 3 min)
 
 ```bash
-# Usar el mismo REFRESH del bloque anterior.
-# Esperar 3 minutos y luego ejecutar:
-curl -s -w "\n%{http_code}\n" -X POST http://localhost:3000/refresh \
+echo -e "\n⏳ REFRESH – esperando expiración del refreshToken (3 minutos)"
+echo "-------------------------------------------------------------"
+
+echo "Esperando 3 minutos..."
+sleep 180
+
+echo -e "\n❌ REFRESH – refreshToken expirado (debe ser 401)"
+echo "-------------------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH\"}"
+  -d "$(jq -n --arg rt "$REFRESH" '{refreshToken: $rt}')"
 ```
 
 ### ❌ Refresh token inválido o faltante
 
 ```bash
-# Token inexistente (no está en la tabla refresh_tokens).
-# El backend debe responder 401.
-curl -s -w "\n%{http_code}\n" -X POST http://localhost:3000/refresh \
+echo -e "\n❌ REFRESH – token inexistente (no está en DB)"
+echo "---------------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
   -d '{"refreshToken":"token-que-no-existe"}'
 
-# Body sin refreshToken.
-# El backend debe responder 401.
-curl -s -w "\n%{http_code}\n" -X POST http://localhost:3000/refresh \
+
+echo -e "\n❌ REFRESH – body sin refreshToken"
+echo "--------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
   -d '{}'
 ```
@@ -410,46 +496,64 @@ Implementá dos cosas y nada más: (1) Rotación de refresh tokens: en POST /ref
 ### 🔁 Rotación: el refresh devuelve uno nuevo y el viejo deja de servir
 
 ```bash
-# Login y obtener refresh token inicial (REFRESH1).
-RES=$(curl -s -X POST http://localhost:3000/login \
+echo -e "\n🔐 LOGIN – obteniendo refreshToken inicial (REFRESH1)"
+echo "--------------------------------------------------"
+
+LOGIN_RES=$(curl -s -X POST http://localhost:3000/login \
   -H "Content-Type: application/json" \
   -d '{"email":"test@demo.com","password":"123456"}')
 
-REFRESH1=$(echo "$RES" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).refreshToken")
+REFRESH1=$(echo "$LOGIN_RES" | jq -r '.refreshToken')
 
-# Primer /refresh con REFRESH1:
-# - REFRESH1 se invalida (se borra de DB)
-# - se genera REFRESH2 (nuevo)
-RES_FIRST=$(curl -s -X POST http://localhost:3000/refresh \
+echo -e "\nREFRESH1:"
+echo "$REFRESH1"
+```
+```bash
+echo -e "\n🔁 REFRESH #1 – rotación de refreshToken"
+echo "---------------------------------------"
+
+REFRESH_RES_1=$(curl -s -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH1\"}")
+  -d "$(jq -n --arg rt "$REFRESH1" '{refreshToken: $rt}')")
 
-REFRESH2=$(echo "$RES_FIRST" | node -p "JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')).refreshToken")
+echo "$REFRESH_RES_1" | jq .
 
-# Reutilizar REFRESH1 (ya usado) -> debe dar 401.
-curl -s -w "\n%{http_code}\n" -X POST http://localhost:3000/refresh \
+REFRESH2=$(echo "$REFRESH_RES_1" | jq -r '.refreshToken')
+
+echo -e "\nREFRESH2 (nuevo):"
+echo "$REFRESH2"
+
+```
+```bash
+echo -e "\n🚫 REUTILIZAR REFRESH1 – debe dar 401"
+echo "------------------------------------"
+
+curl -s -w "\nStatus: %{http_code}\n" -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH1\"}"
+  -d "$(jq -n --arg rt "$REFRESH1" '{refreshToken: $rt}')"
 
-# Usar REFRESH2 (el nuevo) -> debe funcionar y devolver un nuevo par { accessToken, refreshToken }.
+```
+```bash
+echo -e "\n✅ USAR REFRESH2 – debe funcionar y rotar nuevamente"
+echo "----------------------------------------------------"
+
 curl -s -X POST http://localhost:3000/refresh \
   -H "Content-Type: application/json" \
-  -d "{\"refreshToken\":\"$REFRESH2\"}"
+  -d "$(jq -n --arg rt "$REFRESH2" '{refreshToken: $rt}')"
 ```
 
 ### 🚦 Rate limit en POST /login: 6.º intento → 429
 
 ```bash
-# 6 intentos de login en menos de 1 minuto (pueden ser con password incorrecto).
-# Los primeros 5 deberían responder normalmente (ej. 401).
-# El intento 6 debería responder 429 con { error: "too_many_requests" }.
+echo -e "\n🚦 RATE LIMIT – POST /login (5 intentos por minuto)"
+echo "-----------------------------------------------"
+
 for i in 1 2 3 4 5 6; do
-  echo "Intento $i:"
-  curl -s -w " -> %{http_code}\n" -X POST http://localhost:3000/login \
+  echo -n "Intento $i -> "
+  curl -s -w "%{http_code}\n" -X POST http://localhost:3000/login \
     -H "Content-Type: application/json" \
     -d '{"email":"test@demo.com","password":"wrong"}'
 done
-
 ```
 
 
